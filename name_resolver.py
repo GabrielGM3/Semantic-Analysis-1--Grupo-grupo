@@ -66,7 +66,9 @@ class NameResolver:
             if type(decl).__name__ == "FunctionDecl":
                 self.register_function(decl)
         self.check_main(node)
-        # TODO: Visitar os corpos no próximo commit
+        for decl in funcs:
+            if type(decl).__name__ == "FunctionDecl":
+                self.visit_FunctionDecl_body(decl)
 
     def register_function(self, node):
         name = node.name
@@ -87,3 +89,77 @@ class NameResolver:
         main_sym = self.global_functions.get("main")
         if not main_sym or main_sym.type != TypeName.INT or len(main_sym.parameter_types) > 0:
             self.add_error("INVALID_MAIN", node)
+
+    def visit_FunctionDecl_body(self, node):
+        self.current_scope = symbols.Scope(parent=None)
+        for param in getattr(node, "parameters", []):
+            self.visit_Parameter(param)
+        if getattr(node, "body", None):
+            node.body.metadata["scope"] = self.current_scope
+            if hasattr(node.body, "statements"):
+                for stmt in node.body.statements:
+                    self.visit(stmt)
+        self.current_scope = self.current_scope.parent
+
+    def visit_Parameter(self, node):
+        name = node.name
+        if name in self.current_scope.symbols:
+            self.add_error("DUPLICATE_DECLARATION", node)
+        else:
+            sym = symbols.Symbol(
+                name=name, kind=symbols.SymbolKind.PARAMETER, type=to_typename(node.type), declaration=node
+            )
+            self.current_scope.symbols[name] = sym
+            node.metadata["symbol"] = sym
+
+    def visit_Block(self, node):
+        if "scope" not in node.metadata:
+            self.current_scope = symbols.Scope(parent=self.current_scope)
+            node.metadata["scope"] = self.current_scope
+            is_new_scope = True
+        else:
+            is_new_scope = False
+
+        if hasattr(node, "statements"):
+            for stmt in node.statements:
+                self.visit(stmt)
+
+        if is_new_scope:
+            self.current_scope = self.current_scope.parent
+
+    def visit_VarDecl(self, node):
+        name = node.name
+        if name in self.current_scope.symbols:
+            self.add_error("DUPLICATE_DECLARATION", node)
+        else:
+            sym = symbols.Symbol(
+                name=name, kind=symbols.SymbolKind.VARIABLE, type=to_typename(node.type), declaration=node
+            )
+            self.current_scope.symbols[name] = sym
+            node.metadata["symbol"] = sym
+
+        if getattr(node, "initializer", None):
+            self.visit(node.initializer)
+
+    def visit_IdentifierExpr(self, node):
+        name = node.name
+        scope = self.current_scope
+        found = None
+        while scope is not None:
+            if name in scope.symbols:
+                found = scope.symbols[name]
+                break
+            scope = scope.parent
+        if found:
+            node.metadata["symbol"] = found
+        else:
+            self.add_error("UNDECLARED_VARIABLE", node)
+
+    def visit_CallExpr(self, node):
+        name = node.name
+        if name in self.global_functions:
+            node.metadata["symbol"] = self.global_functions[name]
+        else:
+            self.add_error("UNDECLARED_FUNCTION", node)
+        for arg in getattr(node, "args", getattr(node, "arguments", [])):
+            self.visit(arg)

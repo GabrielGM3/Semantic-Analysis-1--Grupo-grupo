@@ -291,7 +291,7 @@ class Parser:
     def parse_logical_and(self) -> Expr:
         expr = self.parse_equality()
         while self.match(TokenKind.LOGICAL_AND):
-            right = self.parse_logical_equality()
+            right = self.parse_equality()
             expr = BinaryExpr(BinaryOperator.LOGICAL_AND, expr, right, span=self._span(expr, right))
 
         return expr

@@ -39,7 +39,6 @@ class TypeChecker:
         if node is None:
             return None
 
-
         if not hasattr(node, "metadata"):
             node.metadata = {}
 
@@ -50,7 +49,6 @@ class TypeChecker:
             result = getattr(self, method_name)(node)
         else:
             result = self.generic_visit(node)
-
 
         if "type" not in node.metadata:
             node.metadata["type"] = result if result is not None else TypeUnknown
@@ -78,24 +76,96 @@ class TypeChecker:
             if key in ('span', 'metadata', 'parent', 'scope', 'symbol', 'symbols'):
                 continue
             value = getattr(node, key, None)
-
             if isinstance(value, (list, tuple)):
                 for item in value:
-                    if hasattr(item, '_class') and type(item).name_ not in ('str', 'int', 'bool', 'float',
-                                                                            'NoneType'):
+                    if hasattr(item, '__class__') and type(item).name_ not in ('str', 'int', 'bool', 'float', 'NoneType'):
                         self.visit(item)
-            elif hasattr(value, '_class') and type(value).name_ not in ('str', 'int', 'bool', 'float',
-                                                                        'NoneType'):
+            elif hasattr(value, '__class__') and type(value).name_ not in ('str', 'int', 'bool', 'float', 'NoneType'):
                 self.visit(value)
+
+    def visit_Program(self, node):
+        funcs = getattr(node, 'functions', getattr(node, 'declarations', []))
+        for decl in funcs:
+            self.expr_context_stack.append(False)
+            self.visit(decl)
+            self.expr_context_stack.pop()
+
+    def visit_FunctionDecl(self, node):
+        self.current_function_return_type = to_typename(node.return_type)
+        node.metadata["type"] = self.current_function_return_type
+
+        for param in getattr(node, "parameters", []):
+            self.visit(param)
+        if getattr(node, "body", None):
+            self.expr_context_stack.append(False)
+            self.visit(node.body)
+            self.expr_context_stack.pop()
+        self.current_function_return_type = None
+
+    def visit_Block(self, node):
+        self.expr_context_stack.append(False)
+        for stmt in getattr(node, "statements", []):
+            self.visit(stmt)
+        self.expr_context_stack.pop()
+
+    def visit_Parameter(self, node):
+        t = getattr(node, "type", getattr(node, "param_type", None))
+        param_t = to_typename(t)
+        node.metadata["type"] = param_t
+
+        if param_t == TypeName.VOID:
+            self.add_error("VOID_PARAMETER", node)
+
+    def visit_VarDecl(self, node):
+        t = getattr(node, "type", getattr(node, "var_type", None))
+        decl_type = to_typename(t)
+        node.metadata["type"] = decl_type
+
+        if decl_type == TypeName.VOID:
+            self.add_error("VOID_VARIABLE", node)
+            decl_type = TypeUnknown
+
+        if getattr(node, "initializer", None):
+            self.expr_context_stack.append(True)
+            init_type = self.visit(node.initializer)
+            self.expr_context_stack.pop()
+
+            if init_type != TypeUnknown and decl_type != TypeUnknown and init_type != decl_type:
+                self.add_error("INITIALIZER_TYPE_MISMATCH", node.initializer)
+
+    def visit_IntLiteral(self, node):
+        val = getattr(node, "value", 0)
+        if not (0 <= val <= 2147483647):
+            self.add_error("INTEGER_LITERAL_OUT_OF_RANGE", node)
+            return TypeUnknown
+        node.metadata["type"] = TypeName.INT
+        return TypeName.INT
+
+    def visit_IntegerLiteral(self, node):
+        return self.visit_IntLiteral(node)
+
+    def visit_BoolLiteral(self, node):
+        node.metadata["type"] = TypeName.BOOL
+        return TypeName.BOOL
+
+    def visit_BooleanLiteral(self, node):
+        return self.visit_BoolLiteral(node)
+
+    def visit_StringLiteral(self, node):
+        node.metadata["type"] = TypeUnknown
+        return TypeUnknown
+
+    def visit_IdentifierExpr(self, node):
+        if "symbol" in node.metadata:
+            t = to_typename(node.metadata["symbol"].type)
+            node.metadata["type"] = t
+            return t
+        return TypeUnknown
 
 
 def check_types(program: Program) -> None:
-    """Determine tipos de expressões e valide seus contextos."""
     checker = TypeChecker()
     checker.visit(program)
-
-
     if not hasattr(program, "diagnostics"):
         program.diagnostics = []
-
     program.diagnostics.extend(checker.diagnostics)
